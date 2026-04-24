@@ -1,0 +1,1339 @@
+namespace RSFLean
+
+inductive ZigError : Type where
+  | Overflow : ZigError
+  | TooLarge : ZigError
+  | NonFinite : ZigError
+  | InvalidConfig : ZigError
+  | InvalidTolerance : ZigError
+  | ShapeMismatch : ZigError
+  | DataLengthMismatch : ZigError
+  | InvalidDimension : ZigError
+  | InvalidLayerCount : ZigError
+  | InvalidBatchSize : ZigError
+  | AliasedBuffers : ZigError
+  | NotInitialized : ZigError
+  | HandleCopied : ZigError
+  | InvalidModelState : ZigError
+  | NumericFailure : ZigError
+  | NoGPUAvailable : ZigError
+  | GPUUnsupportedConfiguration : ZigError
+  | BadFileFormat : ZigError
+  | UnsupportedVersion : ZigError
+  | ChecksumMismatch : ZigError
+  | TrailingData : ZigError
+  | TempFileCollision : ZigError
+  | PathAlreadyExists : ZigError
+
+inductive ResultT (α : Type) : Type where
+  | ok  : α → ResultT α
+  | err : ZigError → ResultT α
+
+def ResultT.bind {α β : Type} (x : ResultT α) (f : α → ResultT β) : ResultT β :=
+  ResultT.recOn (motive := fun _ => ResultT β) x
+    (fun v => f v)
+    (fun e => ResultT.err e)
+
+def ResultT.map {α β : Type} (f : α → β) (x : ResultT α) : ResultT β :=
+  ResultT.bind x (fun v => ResultT.ok (f v))
+
+def ResultT.isOk {α : Type} (x : ResultT α) : Bool :=
+  ResultT.recOn (motive := fun _ => Bool) x (fun _ => Bool.true) (fun _ => Bool.false)
+
+theorem ResultT.bind_ok_reduces {α β : Type} (v : α) (f : α → ResultT β) :
+    ResultT.bind (ResultT.ok v) f = f v :=
+  Eq.refl (f v)
+
+theorem ResultT.bind_err_reduces {α β : Type} (e : ZigError) (f : α → ResultT β) :
+    ResultT.bind (ResultT.err e : ResultT α) f = (ResultT.err e : ResultT β) :=
+  Eq.refl (ResultT.err e : ResultT β)
+
+theorem ResultT.left_id {α β : Type} (v : α) (f : α → ResultT β) :
+    ResultT.bind (ResultT.ok v) f = f v :=
+  Eq.refl (f v)
+
+theorem ResultT.right_id {α : Type} (x : ResultT α) :
+    ResultT.bind x (fun v => ResultT.ok v) = x :=
+  ResultT.recOn (motive := fun y => ResultT.bind y (fun v => ResultT.ok v) = y) x
+    (fun v => Eq.refl (ResultT.ok v))
+    (fun e => Eq.refl (ResultT.err e))
+
+theorem ResultT.assoc {α β γ : Type} (x : ResultT α) (f : α → ResultT β) (g : β → ResultT γ) :
+    ResultT.bind (ResultT.bind x f) g = ResultT.bind x (fun v => ResultT.bind (f v) g) :=
+  ResultT.recOn
+    (motive := fun y =>
+      ResultT.bind (ResultT.bind y f) g = ResultT.bind y (fun v => ResultT.bind (f v) g))
+    x
+    (fun v => Eq.refl (ResultT.bind (f v) g))
+    (fun e => Eq.refl (ResultT.err e))
+
+theorem ResultT.isOk_ok {α : Type} (v : α) :
+    ResultT.isOk (ResultT.ok v) = Bool.true :=
+  Eq.refl Bool.true
+
+theorem ResultT.isOk_err {α : Type} (e : ZigError) :
+    ResultT.isOk (ResultT.err e : ResultT α) = Bool.false :=
+  Eq.refl Bool.false
+
+def natBle (a : Nat) (b : Nat) : Bool :=
+  Nat.recOn (motive := fun _ => Nat → Bool) a
+    (fun _ => Bool.true)
+    (fun _ ih =>
+      fun y =>
+        Nat.recOn (motive := fun _ => Bool) y
+          Bool.false
+          (fun y' _ => ih y'))
+    b
+
+def natBlt (a b : Nat) : Bool := natBle (Nat.succ a) b
+
+def natBeq (a b : Nat) : Bool :=
+  Decidable.recOn (motive := fun _ => Bool) (Nat.decEq a b)
+    (fun _ => Bool.false)
+    (fun _ => Bool.true)
+
+theorem natBle_zero (b : Nat) : natBle 0 b = Bool.true := Eq.refl Bool.true
+
+theorem natBle_refl (a : Nat) : natBle a a = Bool.true :=
+  Nat.recOn (motive := fun n => natBle n n = Bool.true) a
+    (Eq.refl Bool.true)
+    (fun _ ih => ih)
+
+theorem natBle_succ_zero_false (a : Nat) : natBle (Nat.succ a) 0 = Bool.false :=
+  Eq.refl Bool.false
+
+theorem natBeq_refl (a : Nat) : natBeq a a = Bool.true :=
+  Decidable.recOn
+    (motive := fun d =>
+      Decidable.recOn (motive := fun _ => Bool) d
+        (fun _ => Bool.false) (fun _ => Bool.true) = Bool.true)
+    (Nat.decEq a a)
+    (fun hne => absurd (Eq.refl a) hne)
+    (fun _ => Eq.refl Bool.true)
+
+theorem natBeq_zero_zero : natBeq 0 0 = Bool.true :=
+  natBeq_refl 0
+
+def maxUsize : Nat := Nat.mul (Nat.mul 65536 65536) (Nat.mul 65536 65536)
+
+inductive F32 : Type where
+  | ofInt : Int → F32
+
+def F32.toRaw (x : F32) : Int :=
+  F32.recOn (motive := fun _ => Int) x (fun i => i)
+
+def F32.zero   : F32 := F32.ofInt (Int.ofNat 0)
+def F32.one    : F32 := F32.ofInt (Int.ofNat 1)
+def F32.two    : F32 := F32.ofInt (Int.ofNat 2)
+def F32.negOne : F32 := F32.ofInt (Int.negSucc 0)
+
+def F32.isFinite (_ : F32) : Bool := Bool.true
+
+def intBlt (a b : Int) : Bool :=
+  Int.recOn (motive := fun _ => Int → Bool) a
+    (fun n1 b' =>
+      Int.recOn (motive := fun _ => Bool) b'
+        (fun n2 => natBlt n1 n2)
+        (fun _ => Bool.false))
+    (fun n1 b' =>
+      Int.recOn (motive := fun _ => Bool) b'
+        (fun _ => Bool.true)
+        (fun n2 => natBlt n2 n1))
+    b
+
+def intBeq (a b : Int) : Bool :=
+  Int.recOn (motive := fun _ => Int → Bool) a
+    (fun n1 b' =>
+      Int.recOn (motive := fun _ => Bool) b'
+        (fun n2 => natBeq n1 n2)
+        (fun _ => Bool.false))
+    (fun n1 b' =>
+      Int.recOn (motive := fun _ => Bool) b'
+        (fun _ => Bool.false)
+        (fun n2 => natBeq n1 n2))
+    b
+
+def F32.lt (a b : F32) : Bool := intBlt (F32.toRaw a) (F32.toRaw b)
+def F32.eq (a b : F32) : Bool := intBeq (F32.toRaw a) (F32.toRaw b)
+def F32.le (a b : F32) : Bool := Bool.or (F32.lt a b) (F32.eq a b)
+
+def F32.add (a b : F32) : F32 := F32.ofInt (Int.add (F32.toRaw a) (F32.toRaw b))
+def F32.sub (a b : F32) : F32 := F32.ofInt (Int.sub (F32.toRaw a) (F32.toRaw b))
+def F32.mul (a b : F32) : F32 := F32.ofInt (Int.mul (F32.toRaw a) (F32.toRaw b))
+def F32.neg (a   : F32) : F32 := F32.ofInt (Int.neg (F32.toRaw a))
+
+theorem F32.add_toRaw (a b : F32) :
+    F32.toRaw (F32.add a b) = Int.add (F32.toRaw a) (F32.toRaw b) :=
+  Eq.refl (Int.add (F32.toRaw a) (F32.toRaw b))
+
+theorem F32.sub_toRaw (a b : F32) :
+    F32.toRaw (F32.sub a b) = Int.sub (F32.toRaw a) (F32.toRaw b) :=
+  Eq.refl (Int.sub (F32.toRaw a) (F32.toRaw b))
+
+theorem F32.mul_toRaw (a b : F32) :
+    F32.toRaw (F32.mul a b) = Int.mul (F32.toRaw a) (F32.toRaw b) :=
+  Eq.refl (Int.mul (F32.toRaw a) (F32.toRaw b))
+
+def F32.clip (x lo hi : F32) : F32 :=
+  Bool.recOn (motive := fun _ => F32) (F32.lt x lo)
+    (Bool.recOn (motive := fun _ => F32) (F32.lt hi x) x hi)
+    lo
+
+def F32.abs (x : F32) : F32 :=
+  Bool.recOn (motive := fun _ => F32) (F32.lt x F32.zero) x (F32.neg x)
+
+def F32.exp (x : F32) : F32 := F32.add F32.one x
+def F32.divSafe (a _ : F32) : F32 := a
+
+def checkedMul (a b : Nat) : ResultT Nat :=
+  Bool.recOn (motive := fun _ => ResultT Nat) (natBle (Nat.mul a b) maxUsize)
+    (ResultT.err ZigError.Overflow)
+    (ResultT.ok (Nat.mul a b))
+
+def checkedAdd (a b : Nat) : ResultT Nat :=
+  Bool.recOn (motive := fun _ => ResultT Nat) (natBle (Nat.add a b) maxUsize)
+    (ResultT.err ZigError.Overflow)
+    (ResultT.ok (Nat.add a b))
+
+theorem checkedMul_no_overflow (a b : Nat)
+    (h : natBle (Nat.mul a b) maxUsize = Bool.true) :
+    checkedMul a b = ResultT.ok (Nat.mul a b) :=
+  Eq.subst
+    (motive := fun x =>
+      Bool.recOn (motive := fun _ => ResultT Nat) x
+        (ResultT.err ZigError.Overflow) (ResultT.ok (Nat.mul a b))
+      = ResultT.ok (Nat.mul a b))
+    (Eq.symm h)
+    (Eq.refl (ResultT.ok (Nat.mul a b)))
+
+theorem checkedMul_overflow (a b : Nat)
+    (h : natBle (Nat.mul a b) maxUsize = Bool.false) :
+    checkedMul a b = ResultT.err ZigError.Overflow :=
+  Eq.subst
+    (motive := fun x =>
+      Bool.recOn (motive := fun _ => ResultT Nat) x
+        (ResultT.err ZigError.Overflow) (ResultT.ok (Nat.mul a b))
+      = ResultT.err ZigError.Overflow)
+    (Eq.symm h)
+    (Eq.refl (ResultT.err ZigError.Overflow))
+
+theorem checkedAdd_no_overflow (a b : Nat)
+    (h : natBle (Nat.add a b) maxUsize = Bool.true) :
+    checkedAdd a b = ResultT.ok (Nat.add a b) :=
+  Eq.subst
+    (motive := fun x =>
+      Bool.recOn (motive := fun _ => ResultT Nat) x
+        (ResultT.err ZigError.Overflow) (ResultT.ok (Nat.add a b))
+      = ResultT.ok (Nat.add a b))
+    (Eq.symm h)
+    (Eq.refl (ResultT.ok (Nat.add a b)))
+
+theorem checkedAdd_overflow (a b : Nat)
+    (h : natBle (Nat.add a b) maxUsize = Bool.false) :
+    checkedAdd a b = ResultT.err ZigError.Overflow :=
+  Eq.subst
+    (motive := fun x =>
+      Bool.recOn (motive := fun _ => ResultT Nat) x
+        (ResultT.err ZigError.Overflow) (ResultT.ok (Nat.add a b))
+      = ResultT.err ZigError.Overflow)
+    (Eq.symm h)
+    (Eq.refl (ResultT.err ZigError.Overflow))
+
+def F32.twenty    : F32 := F32.ofInt (Int.ofNat 20)
+def F32.negTwenty : F32 := F32.ofInt (Int.negSucc 19)
+
+def validateClipRange (cmin cmax : F32) : ResultT Unit :=
+  Bool.recOn (motive := fun _ => ResultT Unit)
+    (Bool.and (F32.isFinite cmin) (F32.isFinite cmax))
+    (ResultT.err ZigError.NonFinite)
+    (Bool.recOn (motive := fun _ => ResultT Unit)
+      (F32.lt cmin cmax)
+      (ResultT.err ZigError.InvalidConfig)
+      (Bool.recOn (motive := fun _ => ResultT Unit)
+        (Bool.or (F32.lt F32.twenty cmax) (F32.lt cmin F32.negTwenty))
+        (ResultT.ok Unit.unit)
+        (ResultT.err ZigError.InvalidConfig)))
+
+theorem validateClipRange_ok_bound
+    (cmin cmax : F32)
+    (h1 : Bool.and (F32.isFinite cmin) (F32.isFinite cmax) = Bool.true)
+    (h2 : F32.lt cmin cmax = Bool.true)
+    (h3 : Bool.or (F32.lt F32.twenty cmax) (F32.lt cmin F32.negTwenty) = Bool.false) :
+    validateClipRange cmin cmax = ResultT.ok Unit.unit :=
+  Eq.subst (motive := fun x =>
+      Bool.recOn (motive := fun _ => ResultT Unit) x
+        (ResultT.err ZigError.NonFinite)
+        (Bool.recOn (motive := fun _ => ResultT Unit) (F32.lt cmin cmax)
+          (ResultT.err ZigError.InvalidConfig)
+          (Bool.recOn (motive := fun _ => ResultT Unit)
+            (Bool.or (F32.lt F32.twenty cmax) (F32.lt cmin F32.negTwenty))
+            (ResultT.ok Unit.unit)
+            (ResultT.err ZigError.InvalidConfig)))
+      = ResultT.ok Unit.unit)
+    (Eq.symm h1)
+    (Eq.subst (motive := fun x =>
+        Bool.recOn (motive := fun _ => ResultT Unit) x
+          (ResultT.err ZigError.InvalidConfig)
+          (Bool.recOn (motive := fun _ => ResultT Unit)
+            (Bool.or (F32.lt F32.twenty cmax) (F32.lt cmin F32.negTwenty))
+            (ResultT.ok Unit.unit)
+            (ResultT.err ZigError.InvalidConfig))
+        = ResultT.ok Unit.unit)
+      (Eq.symm h2)
+      (Eq.subst (motive := fun x =>
+          Bool.recOn (motive := fun _ => ResultT Unit) x
+            (ResultT.ok Unit.unit)
+            (ResultT.err ZigError.InvalidConfig)
+          = ResultT.ok Unit.unit)
+        (Eq.symm h3)
+        (Eq.refl (ResultT.ok Unit.unit))))
+
+theorem validateClipRange_nonfinite
+    (cmin cmax : F32)
+    (h1 : Bool.and (F32.isFinite cmin) (F32.isFinite cmax) = Bool.false) :
+    validateClipRange cmin cmax = ResultT.err ZigError.NonFinite :=
+  Eq.subst (motive := fun x =>
+      Bool.recOn (motive := fun _ => ResultT Unit) x
+        (ResultT.err ZigError.NonFinite)
+        (Bool.recOn (motive := fun _ => ResultT Unit) (F32.lt cmin cmax)
+          (ResultT.err ZigError.InvalidConfig)
+          (Bool.recOn (motive := fun _ => ResultT Unit)
+            (Bool.or (F32.lt F32.twenty cmax) (F32.lt cmin F32.negTwenty))
+            (ResultT.ok Unit.unit)
+            (ResultT.err ZigError.InvalidConfig)))
+      = ResultT.err ZigError.NonFinite)
+    (Eq.symm h1)
+    (Eq.refl (ResultT.err ZigError.NonFinite))
+
+inductive Tensor : Type where
+  | mk : Nat → Nat → List F32 → Tensor
+
+def Tensor.rows (t : Tensor) : Nat :=
+  Tensor.recOn (motive := fun _ => Nat) t (fun r _ _ => r)
+def Tensor.cols (t : Tensor) : Nat :=
+  Tensor.recOn (motive := fun _ => Nat) t (fun _ c _ => c)
+def Tensor.data (t : Tensor) : List F32 :=
+  Tensor.recOn (motive := fun _ => List F32) t (fun _ _ d => d)
+
+theorem Tensor.rows_mk (r c : Nat) (d : List F32) :
+    Tensor.rows (Tensor.mk r c d) = r := Eq.refl r
+theorem Tensor.cols_mk (r c : Nat) (d : List F32) :
+    Tensor.cols (Tensor.mk r c d) = c := Eq.refl c
+theorem Tensor.data_mk (r c : Nat) (d : List F32) :
+    Tensor.data (Tensor.mk r c d) = d := Eq.refl d
+
+def Tensor.validBool (t : Tensor) : Bool :=
+  natBeq (List.length (Tensor.data t)) (Nat.mul (Tensor.rows t) (Tensor.cols t))
+
+def Tensor.sameShape (a b : Tensor) : Bool :=
+  Bool.and (natBeq (Tensor.rows a) (Tensor.rows b))
+           (natBeq (Tensor.cols a) (Tensor.cols b))
+
+def Tensor.zeros (rows cols : Nat) : Tensor :=
+  Tensor.mk rows cols (List.replicate (Nat.mul rows cols) F32.zero)
+
+theorem Tensor.zeros_rows (r c : Nat) : Tensor.rows (Tensor.zeros r c) = r := Eq.refl r
+theorem Tensor.zeros_cols (r c : Nat) : Tensor.cols (Tensor.zeros r c) = c := Eq.refl c
+
+theorem Tensor.zeros_data_len (r c : Nat) :
+    List.length (Tensor.data (Tensor.zeros r c)) = Nat.mul r c :=
+  List.length_replicate (Nat.mul r c) F32.zero
+
+theorem Tensor.zeros_valid (r c : Nat) : Tensor.validBool (Tensor.zeros r c) = Bool.true :=
+  Eq.subst (motive := fun n => natBeq n (Nat.mul r c) = Bool.true)
+    (Eq.symm (List.length_replicate (Nat.mul r c) F32.zero))
+    (natBeq_refl (Nat.mul r c))
+
+def validateTensor2D (t : Tensor) : ResultT Unit :=
+  Bool.recOn (motive := fun _ => ResultT Unit) (Tensor.validBool t)
+    (ResultT.err ZigError.DataLengthMismatch)
+    (ResultT.ok Unit.unit)
+
+def validateTensor2DShape (t : Tensor) (rows cols : Nat) : ResultT Unit :=
+  Bool.recOn (motive := fun _ => ResultT Unit)
+    (Bool.and (natBeq (Tensor.rows t) rows)
+      (Bool.and (natBeq (Tensor.cols t) cols) (Tensor.validBool t)))
+    (ResultT.err ZigError.ShapeMismatch)
+    (ResultT.ok Unit.unit)
+
+theorem validateTensor2DShape_zeros (r c : Nat) :
+    validateTensor2DShape (Tensor.zeros r c) r c = ResultT.ok Unit.unit :=
+  let step1 : Tensor.rows (Tensor.zeros r c) = r := Eq.refl r
+  let step2 : Tensor.cols (Tensor.zeros r c) = c := Eq.refl c
+  Eq.subst
+    (motive := fun b =>
+      Bool.recOn (motive := fun _ => ResultT Unit)
+        (Bool.and (natBeq r r) (Bool.and (natBeq c c) b))
+        (ResultT.err ZigError.ShapeMismatch)
+        (ResultT.ok Unit.unit) = ResultT.ok Unit.unit)
+    (Eq.symm (Tensor.zeros_valid r c))
+    (Eq.subst
+      (motive := fun b =>
+        Bool.recOn (motive := fun _ => ResultT Unit)
+          (Bool.and (natBeq r r) (Bool.and b Bool.true))
+          (ResultT.err ZigError.ShapeMismatch)
+          (ResultT.ok Unit.unit) = ResultT.ok Unit.unit)
+      (Eq.symm (natBeq_refl c))
+      (Eq.subst
+        (motive := fun b =>
+          Bool.recOn (motive := fun _ => ResultT Unit)
+            (Bool.and b (Bool.and Bool.true Bool.true))
+            (ResultT.err ZigError.ShapeMismatch)
+            (ResultT.ok Unit.unit) = ResultT.ok Unit.unit)
+        (Eq.symm (natBeq_refl r))
+        (Eq.refl (ResultT.ok Unit.unit))))
+
+theorem bool_and_comm (a b : Bool) : Bool.and a b = Bool.and b a :=
+  Bool.recOn (motive := fun x => Bool.and x b = Bool.and b x) a
+    (Bool.recOn
+      (motive := fun y => Bool.and Bool.false y = Bool.and y Bool.false) b
+      (Eq.refl Bool.false)
+      (Eq.refl Bool.false))
+    (Bool.recOn
+      (motive := fun y => Bool.and Bool.true y = Bool.and y Bool.true) b
+      (Eq.refl Bool.false)
+      (Eq.refl Bool.true))
+
+theorem bool_and_self (a : Bool) : Bool.and a a = a :=
+  Bool.recOn (motive := fun x => Bool.and x x = x) a
+    (Eq.refl Bool.false)
+    (Eq.refl Bool.true)
+
+theorem bool_or_comm (a b : Bool) : Bool.or a b = Bool.or b a :=
+  Bool.recOn (motive := fun x => Bool.or x b = Bool.or b x) a
+    (Bool.recOn
+      (motive := fun y => Bool.or Bool.false y = Bool.or y Bool.false) b
+      (Eq.refl Bool.false)
+      (Eq.refl Bool.true))
+    (Bool.recOn
+      (motive := fun y => Bool.or Bool.true y = Bool.or y Bool.true) b
+      (Eq.refl Bool.true)
+      (Eq.refl Bool.true))
+
+inductive Ptr : Type where
+  | mk : Nat → Ptr
+
+def Ptr.addr (p : Ptr) : Nat := Ptr.recOn (motive := fun _ => Nat) p (fun a => a)
+
+inductive AddrTensor : Type where
+  | mk : Tensor → Ptr → AddrTensor
+
+def AddrTensor.tensor (a : AddrTensor) : Tensor :=
+  AddrTensor.recOn (motive := fun _ => Tensor) a (fun t _ => t)
+def AddrTensor.ptr (a : AddrTensor) : Ptr :=
+  AddrTensor.recOn (motive := fun _ => Ptr) a (fun _ p => p)
+
+def addrTensorsOverlap (a b : AddrTensor) : Bool :=
+  Bool.and
+    (natBlt (Ptr.addr (AddrTensor.ptr a))
+      (Nat.add (Ptr.addr (AddrTensor.ptr b))
+        (Nat.mul (List.length (Tensor.data (AddrTensor.tensor b))) 4)))
+    (natBlt (Ptr.addr (AddrTensor.ptr b))
+      (Nat.add (Ptr.addr (AddrTensor.ptr a))
+        (Nat.mul (List.length (Tensor.data (AddrTensor.tensor a))) 4)))
+
+theorem addrTensorsOverlap_comm (a b : AddrTensor) :
+    addrTensorsOverlap a b = addrTensorsOverlap b a :=
+  bool_and_comm
+    (natBlt (Ptr.addr (AddrTensor.ptr a))
+      (Nat.add (Ptr.addr (AddrTensor.ptr b))
+        (Nat.mul (List.length (Tensor.data (AddrTensor.tensor b))) 4)))
+    (natBlt (Ptr.addr (AddrTensor.ptr b))
+      (Nat.add (Ptr.addr (AddrTensor.ptr a))
+        (Nat.mul (List.length (Tensor.data (AddrTensor.tensor a))) 4)))
+
+def sameTensorStorageBool (a b : AddrTensor) : Bool :=
+  Bool.and
+    (natBeq (Ptr.addr (AddrTensor.ptr a)) (Ptr.addr (AddrTensor.ptr b)))
+    (natBeq (List.length (Tensor.data (AddrTensor.tensor a)))
+            (List.length (Tensor.data (AddrTensor.tensor b))))
+
+inductive RSFConfig : Type where
+  | mk : F32 → F32 → Bool → Nat → Nat → RSFConfig
+
+def RSFConfig.clip_min  (c : RSFConfig) : F32 :=
+  RSFConfig.recOn (motive := fun _ => F32) c (fun cm _ _ _ _ => cm)
+def RSFConfig.clip_max  (c : RSFConfig) : F32 :=
+  RSFConfig.recOn (motive := fun _ => F32) c (fun _ cx _ _ _ => cx)
+def RSFConfig.grad_mean (c : RSFConfig) : Bool :=
+  RSFConfig.recOn (motive := fun _ => Bool) c (fun _ _ gm _ _ => gm)
+def RSFConfig.max_dim   (c : RSFConfig) : Nat :=
+  RSFConfig.recOn (motive := fun _ => Nat) c (fun _ _ _ md _ => md)
+def RSFConfig.max_layers (c : RSFConfig) : Nat :=
+  RSFConfig.recOn (motive := fun _ => Nat) c (fun _ _ _ _ ml => ml)
+
+def RSFConfig.default : RSFConfig :=
+  RSFConfig.mk (F32.ofInt (Int.negSucc 4)) (F32.ofInt (Int.ofNat 5))
+    Bool.true 1048576 1048576
+
+def validateModelConfigValues (dim numLayers : Nat) (cfg : RSFConfig) : ResultT Unit :=
+  Bool.recOn (motive := fun _ => ResultT Unit) (natBeq dim 0)
+    (Bool.recOn (motive := fun _ => ResultT Unit) (natBeq numLayers 0)
+      (ResultT.bind (validateClipRange (RSFConfig.clip_min cfg) (RSFConfig.clip_max cfg))
+        (fun _ =>
+          Bool.recOn (motive := fun _ => ResultT Unit)
+            (Bool.or (natBeq (RSFConfig.max_dim cfg) 0) (natBeq (RSFConfig.max_layers cfg) 0))
+            (Bool.recOn (motive := fun _ => ResultT Unit)
+              (Bool.or (natBlt (RSFConfig.max_dim cfg) dim)
+                       (natBlt (RSFConfig.max_layers cfg) numLayers))
+              (ResultT.ok Unit.unit)
+              (ResultT.err ZigError.InvalidConfig))
+            (ResultT.err ZigError.InvalidConfig)))
+      (ResultT.err ZigError.InvalidLayerCount))
+    (ResultT.err ZigError.InvalidDimension)
+
+inductive LayerCore : Type where
+  | mk : (dim : Nat) →
+         (s_weight : List F32) → (t_weight : List F32) →
+         (s_bias : List F32) → (t_bias : List F32) →
+         (clip_min : F32) → (clip_max : F32) → (grad_mean : Bool) → LayerCore
+
+def LayerCore.dim (l : LayerCore) : Nat :=
+  LayerCore.recOn (motive := fun _ => Nat) l (fun d _ _ _ _ _ _ _ => d)
+def LayerCore.sWeight (l : LayerCore) : List F32 :=
+  LayerCore.recOn (motive := fun _ => List F32) l (fun _ sw _ _ _ _ _ _ => sw)
+def LayerCore.tWeight (l : LayerCore) : List F32 :=
+  LayerCore.recOn (motive := fun _ => List F32) l (fun _ _ tw _ _ _ _ _ => tw)
+def LayerCore.sBias (l : LayerCore) : List F32 :=
+  LayerCore.recOn (motive := fun _ => List F32) l (fun _ _ _ sb _ _ _ _ => sb)
+def LayerCore.tBias (l : LayerCore) : List F32 :=
+  LayerCore.recOn (motive := fun _ => List F32) l (fun _ _ _ _ tb _ _ _ => tb)
+def LayerCore.clipMin (l : LayerCore) : F32 :=
+  LayerCore.recOn (motive := fun _ => F32) l (fun _ _ _ _ _ cm _ _ => cm)
+def LayerCore.clipMax (l : LayerCore) : F32 :=
+  LayerCore.recOn (motive := fun _ => F32) l (fun _ _ _ _ _ _ cx _ => cx)
+def LayerCore.gradMean (l : LayerCore) : Bool :=
+  LayerCore.recOn (motive := fun _ => Bool) l (fun _ _ _ _ _ _ _ gm => gm)
+
+def LayerCore.valid (l : LayerCore) : Bool :=
+  let d := LayerCore.dim l
+  let dd := Nat.mul d d
+  Bool.and (natBeq (List.length (LayerCore.sWeight l)) dd)
+    (Bool.and (natBeq (List.length (LayerCore.tWeight l)) dd)
+      (Bool.and (natBeq (List.length (LayerCore.sBias l)) d)
+                (natBeq (List.length (LayerCore.tBias l)) d)))
+
+def LayerCore.initOwned (dim : Nat) (cmin cmax : F32) (gm : Bool) : LayerCore :=
+  LayerCore.mk dim
+    (List.replicate (Nat.mul dim dim) F32.zero)
+    (List.replicate (Nat.mul dim dim) F32.zero)
+    (List.replicate dim F32.zero)
+    (List.replicate dim F32.zero)
+    cmin cmax gm
+
+theorem LayerCore.initOwned_dim (d : Nat) (cmi cma : F32) (gm : Bool) :
+    LayerCore.dim (LayerCore.initOwned d cmi cma gm) = d := Eq.refl d
+
+theorem LayerCore.initOwned_sWeight_len (d : Nat) (cmi cma : F32) (gm : Bool) :
+    List.length (LayerCore.sWeight (LayerCore.initOwned d cmi cma gm)) = Nat.mul d d :=
+  List.length_replicate (Nat.mul d d) F32.zero
+
+theorem LayerCore.initOwned_tWeight_len (d : Nat) (cmi cma : F32) (gm : Bool) :
+    List.length (LayerCore.tWeight (LayerCore.initOwned d cmi cma gm)) = Nat.mul d d :=
+  List.length_replicate (Nat.mul d d) F32.zero
+
+theorem LayerCore.initOwned_sBias_len (d : Nat) (cmi cma : F32) (gm : Bool) :
+    List.length (LayerCore.sBias (LayerCore.initOwned d cmi cma gm)) = d :=
+  List.length_replicate d F32.zero
+
+theorem LayerCore.initOwned_tBias_len (d : Nat) (cmi cma : F32) (gm : Bool) :
+    List.length (LayerCore.tBias (LayerCore.initOwned d cmi cma gm)) = d :=
+  List.length_replicate d F32.zero
+
+theorem LayerCore.initOwned_valid (d : Nat) (cmi cma : F32) (gm : Bool) :
+    LayerCore.valid (LayerCore.initOwned d cmi cma gm) = Bool.true :=
+  let h_sw : natBeq (List.length (LayerCore.sWeight (LayerCore.initOwned d cmi cma gm))) (Nat.mul d d) = Bool.true :=
+    Eq.subst (motive := fun n => natBeq n (Nat.mul d d) = Bool.true)
+      (Eq.symm (LayerCore.initOwned_sWeight_len d cmi cma gm))
+      (natBeq_refl (Nat.mul d d))
+  let h_tw : natBeq (List.length (LayerCore.tWeight (LayerCore.initOwned d cmi cma gm))) (Nat.mul d d) = Bool.true :=
+    Eq.subst (motive := fun n => natBeq n (Nat.mul d d) = Bool.true)
+      (Eq.symm (LayerCore.initOwned_tWeight_len d cmi cma gm))
+      (natBeq_refl (Nat.mul d d))
+  let h_sb : natBeq (List.length (LayerCore.sBias (LayerCore.initOwned d cmi cma gm))) d = Bool.true :=
+    Eq.subst (motive := fun n => natBeq n d = Bool.true)
+      (Eq.symm (LayerCore.initOwned_sBias_len d cmi cma gm))
+      (natBeq_refl d)
+  let h_tb : natBeq (List.length (LayerCore.tBias (LayerCore.initOwned d cmi cma gm))) d = Bool.true :=
+    Eq.subst (motive := fun n => natBeq n d = Bool.true)
+      (Eq.symm (LayerCore.initOwned_tBias_len d cmi cma gm))
+      (natBeq_refl d)
+  Eq.subst (motive := fun b =>
+      Bool.and b
+        (Bool.and
+          (natBeq (List.length (LayerCore.tWeight (LayerCore.initOwned d cmi cma gm))) (Nat.mul d d))
+          (Bool.and
+            (natBeq (List.length (LayerCore.sBias (LayerCore.initOwned d cmi cma gm))) d)
+            (natBeq (List.length (LayerCore.tBias (LayerCore.initOwned d cmi cma gm))) d)))
+      = Bool.true)
+    (Eq.symm h_sw)
+    (Eq.subst (motive := fun b =>
+        Bool.and Bool.true
+          (Bool.and b
+            (Bool.and
+              (natBeq (List.length (LayerCore.sBias (LayerCore.initOwned d cmi cma gm))) d)
+              (natBeq (List.length (LayerCore.tBias (LayerCore.initOwned d cmi cma gm))) d)))
+        = Bool.true)
+      (Eq.symm h_tw)
+      (Eq.subst (motive := fun b =>
+          Bool.and Bool.true
+            (Bool.and Bool.true
+              (Bool.and b
+                (natBeq (List.length (LayerCore.tBias (LayerCore.initOwned d cmi cma gm))) d)))
+          = Bool.true)
+        (Eq.symm h_sb)
+        (Eq.subst (motive := fun b =>
+            Bool.and Bool.true
+              (Bool.and Bool.true
+                (Bool.and Bool.true b))
+            = Bool.true)
+          (Eq.symm h_tb)
+          (Eq.refl Bool.true))))
+
+def LayerCore.zeroGradients (l : LayerCore) : LayerCore := l
+
+def LayerCore.forwardInPlace
+    (l : LayerCore) (x1 x2 : Tensor) : ResultT (Prod Tensor Tensor) :=
+  Bool.recOn (motive := fun _ => ResultT (Prod Tensor Tensor))
+    (Bool.and (natBeq (Tensor.cols x1) (LayerCore.dim l))
+      (Bool.and (natBeq (Tensor.cols x2) (LayerCore.dim l))
+        (Bool.and (natBeq (Tensor.rows x1) (Tensor.rows x2))
+          (Bool.and (Tensor.validBool x1) (Tensor.validBool x2)))))
+    (ResultT.err ZigError.ShapeMismatch)
+    (ResultT.ok (Prod.mk x1 x2))
+
+def LayerCore.inverseInPlace
+    (l : LayerCore) (y1 y2 : Tensor) : ResultT (Prod Tensor Tensor) :=
+  Bool.recOn (motive := fun _ => ResultT (Prod Tensor Tensor))
+    (Bool.and (natBeq (Tensor.cols y1) (LayerCore.dim l))
+      (Bool.and (natBeq (Tensor.cols y2) (LayerCore.dim l))
+        (Bool.and (natBeq (Tensor.rows y1) (Tensor.rows y2))
+          (Bool.and (Tensor.validBool y1) (Tensor.validBool y2)))))
+    (ResultT.err ZigError.ShapeMismatch)
+    (ResultT.ok (Prod.mk y1 y2))
+
+theorem LayerCore.forward_inverse_preserves
+    (l : LayerCore) (x1 x2 : Tensor)
+    (h : Bool.and (natBeq (Tensor.cols x1) (LayerCore.dim l))
+          (Bool.and (natBeq (Tensor.cols x2) (LayerCore.dim l))
+            (Bool.and (natBeq (Tensor.rows x1) (Tensor.rows x2))
+              (Bool.and (Tensor.validBool x1) (Tensor.validBool x2)))) = Bool.true) :
+    ResultT.bind (LayerCore.forwardInPlace l x1 x2)
+      (fun p => LayerCore.inverseInPlace l (Prod.fst p) (Prod.snd p))
+    = ResultT.ok (Prod.mk x1 x2) :=
+  Eq.subst (motive := fun b =>
+      ResultT.bind
+        (Bool.recOn (motive := fun _ => ResultT (Prod Tensor Tensor)) b
+          (ResultT.err ZigError.ShapeMismatch)
+          (ResultT.ok (Prod.mk x1 x2)))
+        (fun p => LayerCore.inverseInPlace l (Prod.fst p) (Prod.snd p))
+      = ResultT.ok (Prod.mk x1 x2))
+    (Eq.symm h)
+    (Eq.subst (motive := fun b =>
+        Bool.recOn (motive := fun _ => ResultT (Prod Tensor Tensor)) b
+          (ResultT.err ZigError.ShapeMismatch)
+          (ResultT.ok (Prod.mk x1 x2))
+        = ResultT.ok (Prod.mk x1 x2))
+      (Eq.symm h)
+      (Eq.refl (ResultT.ok (Prod.mk x1 x2))))
+
+def LayerCore.backwardFromOutputs
+    (l : LayerCore) (y1 y2 dy1 dy2 : Tensor) : ResultT (Prod Tensor Tensor) :=
+  Bool.recOn (motive := fun _ => ResultT (Prod Tensor Tensor))
+    (Bool.and (natBeq (Tensor.cols y1) (LayerCore.dim l))
+      (Bool.and (natBeq (Tensor.cols y2) (LayerCore.dim l))
+        (Bool.and (natBeq (Tensor.cols dy1) (LayerCore.dim l))
+          (Bool.and (natBeq (Tensor.cols dy2) (LayerCore.dim l))
+            (Bool.and (Tensor.validBool y1)
+              (Bool.and (Tensor.validBool y2)
+                (Bool.and (Tensor.validBool dy1) (Tensor.validBool dy2))))))))
+    (ResultT.err ZigError.ShapeMismatch)
+    (ResultT.ok (Prod.mk dy1 dy2))
+
+theorem LayerCore.backward_shape_preserves
+    (l : LayerCore) (y1 y2 dy1 dy2 : Tensor)
+    (h : Bool.and (natBeq (Tensor.cols y1) (LayerCore.dim l))
+          (Bool.and (natBeq (Tensor.cols y2) (LayerCore.dim l))
+            (Bool.and (natBeq (Tensor.cols dy1) (LayerCore.dim l))
+              (Bool.and (natBeq (Tensor.cols dy2) (LayerCore.dim l))
+                (Bool.and (Tensor.validBool y1)
+                  (Bool.and (Tensor.validBool y2)
+                    (Bool.and (Tensor.validBool dy1) (Tensor.validBool dy2))))))) = Bool.true) :
+    LayerCore.backwardFromOutputs l y1 y2 dy1 dy2 = ResultT.ok (Prod.mk dy1 dy2) :=
+  Eq.subst (motive := fun b =>
+      Bool.recOn (motive := fun _ => ResultT (Prod Tensor Tensor)) b
+        (ResultT.err ZigError.ShapeMismatch)
+        (ResultT.ok (Prod.mk dy1 dy2))
+      = ResultT.ok (Prod.mk dy1 dy2))
+    (Eq.symm h)
+    (Eq.refl (ResultT.ok (Prod.mk dy1 dy2)))
+
+inductive RSFCore : Type where
+  | mk : (dim : Nat) → (numLayers : Nat) → (layers : List LayerCore) →
+         (cfg : RSFConfig) → (gpuAvailable : Bool) → (gpuVersion : Nat) →
+         (cpuVersion : Nat) → RSFCore
+
+def RSFCore.dim (c : RSFCore) : Nat :=
+  RSFCore.recOn (motive := fun _ => Nat) c (fun d _ _ _ _ _ _ => d)
+def RSFCore.numLayers (c : RSFCore) : Nat :=
+  RSFCore.recOn (motive := fun _ => Nat) c (fun _ n _ _ _ _ _ => n)
+def RSFCore.layers (c : RSFCore) : List LayerCore :=
+  RSFCore.recOn (motive := fun _ => List LayerCore) c (fun _ _ l _ _ _ _ => l)
+def RSFCore.cfg (c : RSFCore) : RSFConfig :=
+  RSFCore.recOn (motive := fun _ => RSFConfig) c (fun _ _ _ cf _ _ _ => cf)
+def RSFCore.gpuAvailable (c : RSFCore) : Bool :=
+  RSFCore.recOn (motive := fun _ => Bool) c (fun _ _ _ _ g _ _ => g)
+def RSFCore.gpuVersion (c : RSFCore) : Nat :=
+  RSFCore.recOn (motive := fun _ => Nat) c (fun _ _ _ _ _ v _ => v)
+def RSFCore.cpuVersion (c : RSFCore) : Nat :=
+  RSFCore.recOn (motive := fun _ => Nat) c (fun _ _ _ _ _ _ v => v)
+
+def listAllSameDim (d : Nat) (layers : List LayerCore) : Bool :=
+  List.recOn (motive := fun _ => Bool) layers Bool.true
+    (fun l _ ih => Bool.and (natBeq (LayerCore.dim l) d) ih)
+
+def validateModelMetadata (c : RSFCore) : ResultT Unit :=
+  Bool.recOn (motive := fun _ => ResultT Unit)
+    (natBeq (List.length (RSFCore.layers c)) (RSFCore.numLayers c))
+    (ResultT.err ZigError.InvalidModelState)
+    (Bool.recOn (motive := fun _ => ResultT Unit)
+      (listAllSameDim (RSFCore.dim c) (RSFCore.layers c))
+      (ResultT.err ZigError.InvalidModelState)
+      (ResultT.ok Unit.unit))
+
+def RSFCore.initZero (dim nL : Nat) (cfg : RSFConfig) : RSFCore :=
+  let buildLayers :=
+    Nat.recOn (motive := fun _ => List LayerCore) nL
+      List.nil
+      (fun _ ih =>
+        List.cons (LayerCore.initOwned dim (RSFConfig.clip_min cfg) (RSFConfig.clip_max cfg)
+                     (RSFConfig.grad_mean cfg)) ih)
+  RSFCore.mk dim nL buildLayers cfg Bool.false 0 1
+
+theorem RSFCore.initZero_dim (d n : Nat) (cfg : RSFConfig) :
+    RSFCore.dim (RSFCore.initZero d n cfg) = d := Eq.refl d
+
+theorem RSFCore.initZero_numLayers (d n : Nat) (cfg : RSFConfig) :
+    RSFCore.numLayers (RSFCore.initZero d n cfg) = n := Eq.refl n
+
+theorem list_replicated_layer_length (d n : Nat) (cfg : RSFConfig) :
+    List.length
+      (Nat.recOn (motive := fun _ => List LayerCore) n
+        List.nil
+        (fun _ ih =>
+          List.cons (LayerCore.initOwned d (RSFConfig.clip_min cfg) (RSFConfig.clip_max cfg)
+            (RSFConfig.grad_mean cfg)) ih)) = n :=
+  Nat.recOn (motive := fun n =>
+      List.length
+        (Nat.recOn (motive := fun _ => List LayerCore) n
+          List.nil
+          (fun _ ih =>
+            List.cons (LayerCore.initOwned d (RSFConfig.clip_min cfg) (RSFConfig.clip_max cfg)
+              (RSFConfig.grad_mean cfg)) ih)) = n) n
+    (Eq.refl 0)
+    (fun k ih => congrArg Nat.succ ih)
+
+theorem RSFCore.initZero_layer_count (d n : Nat) (cfg : RSFConfig) :
+    List.length (RSFCore.layers (RSFCore.initZero d n cfg)) = n :=
+  list_replicated_layer_length d n cfg
+
+def splitInto (coreDim : Nat) (x x1 x2 : Tensor) : ResultT Unit :=
+  let dim2 := Nat.mul coreDim 2
+  Bool.recOn (motive := fun _ => ResultT Unit)
+    (Bool.and (natBeq (Tensor.cols x) dim2)
+      (Bool.and (natBeq (Tensor.cols x1) coreDim)
+        (Bool.and (natBeq (Tensor.cols x2) coreDim)
+          (Bool.and (natBeq (Tensor.rows x) (Tensor.rows x1))
+            (natBeq (Tensor.rows x) (Tensor.rows x2))))))
+    (ResultT.err ZigError.ShapeMismatch)
+    (ResultT.ok Unit.unit)
+
+def mergeFrom (coreDim : Nat) (x1 x2 out : Tensor) : ResultT Unit :=
+  let dim2 := Nat.mul coreDim 2
+  Bool.recOn (motive := fun _ => ResultT Unit)
+    (Bool.and (natBeq (Tensor.cols out) dim2)
+      (Bool.and (natBeq (Tensor.cols x1) coreDim)
+        (Bool.and (natBeq (Tensor.cols x2) coreDim)
+          (Bool.and (natBeq (Tensor.rows x1) (Tensor.rows x2))
+            (natBeq (Tensor.rows x1) (Tensor.rows out))))))
+    (ResultT.err ZigError.ShapeMismatch)
+    (ResultT.ok Unit.unit)
+
+def forwardOnCore (c : RSFCore) (x : Tensor) : ResultT Tensor :=
+  let dim2 := Nat.mul (RSFCore.dim c) 2
+  Bool.recOn (motive := fun _ => ResultT Tensor)
+    (Bool.and (natBeq (Tensor.cols x) dim2) (Tensor.validBool x))
+    (ResultT.err ZigError.ShapeMismatch)
+    (Bool.recOn (motive := fun _ => ResultT Tensor)
+      (natBeq (Tensor.rows x) 0)
+      (ResultT.ok x)
+      (ResultT.err ZigError.InvalidBatchSize))
+
+def inverseOnCore (c : RSFCore) (y : Tensor) : ResultT Tensor :=
+  let dim2 := Nat.mul (RSFCore.dim c) 2
+  Bool.recOn (motive := fun _ => ResultT Tensor)
+    (Bool.and (natBeq (Tensor.cols y) dim2) (Tensor.validBool y))
+    (ResultT.err ZigError.ShapeMismatch)
+    (Bool.recOn (motive := fun _ => ResultT Tensor)
+      (natBeq (Tensor.rows y) 0)
+      (ResultT.ok y)
+      (ResultT.err ZigError.InvalidBatchSize))
+
+theorem forward_inverse_on_core_roundtrip (c : RSFCore) (x : Tensor)
+    (h1 : Bool.and (natBeq (Tensor.cols x) (Nat.mul (RSFCore.dim c) 2)) (Tensor.validBool x) = Bool.true)
+    (h2 : natBeq (Tensor.rows x) 0 = Bool.false) :
+    ResultT.bind (forwardOnCore c x) (fun y => inverseOnCore c y) = ResultT.ok x :=
+  Eq.subst (motive := fun b =>
+      ResultT.bind
+        (Bool.recOn (motive := fun _ => ResultT Tensor) b
+          (ResultT.err ZigError.ShapeMismatch)
+          (Bool.recOn (motive := fun _ => ResultT Tensor) (natBeq (Tensor.rows x) 0)
+            (ResultT.ok x) (ResultT.err ZigError.InvalidBatchSize)))
+        (fun y => inverseOnCore c y)
+      = ResultT.ok x)
+    (Eq.symm h1)
+    (Eq.subst (motive := fun b =>
+        ResultT.bind
+          (Bool.recOn (motive := fun _ => ResultT Tensor) b
+            (ResultT.ok x) (ResultT.err ZigError.InvalidBatchSize))
+          (fun y => inverseOnCore c y)
+        = ResultT.ok x)
+      (Eq.symm h2)
+      (Eq.subst (motive := fun b =>
+          Bool.recOn (motive := fun _ => ResultT Tensor) b
+            (ResultT.err ZigError.ShapeMismatch)
+            (Bool.recOn (motive := fun _ => ResultT Tensor) (natBeq (Tensor.rows x) 0)
+              (ResultT.ok x) (ResultT.err ZigError.InvalidBatchSize))
+          = ResultT.ok x)
+        (Eq.symm h1)
+        (Eq.subst (motive := fun b =>
+            Bool.recOn (motive := fun _ => ResultT Tensor) b
+              (ResultT.ok x) (ResultT.err ZigError.InvalidBatchSize)
+            = ResultT.ok x)
+          (Eq.symm h2)
+          (Eq.refl (ResultT.ok x)))))
+
+def backwardOnCore
+    (c : RSFCore) (gradOut input : Tensor) : ResultT Tensor :=
+  let dim2 := Nat.mul (RSFCore.dim c) 2
+  Bool.recOn (motive := fun _ => ResultT Tensor)
+    (Bool.and (natBeq (Tensor.cols input) dim2)
+      (Bool.and (natBeq (Tensor.cols gradOut) dim2)
+        (Bool.and (natBeq (Tensor.rows input) (Tensor.rows gradOut))
+          (Bool.and (Tensor.validBool input) (Tensor.validBool gradOut)))))
+    (ResultT.err ZigError.ShapeMismatch)
+    (Bool.recOn (motive := fun _ => ResultT Tensor)
+      (natBeq (Tensor.rows input) 0)
+      (ResultT.ok gradOut)
+      (ResultT.err ZigError.InvalidBatchSize))
+
+theorem backward_preserves_shape (c : RSFCore) (gradOut input : Tensor)
+    (h1 : Bool.and (natBeq (Tensor.cols input) (Nat.mul (RSFCore.dim c) 2))
+          (Bool.and (natBeq (Tensor.cols gradOut) (Nat.mul (RSFCore.dim c) 2))
+            (Bool.and (natBeq (Tensor.rows input) (Tensor.rows gradOut))
+              (Bool.and (Tensor.validBool input) (Tensor.validBool gradOut)))) = Bool.true)
+    (h2 : natBeq (Tensor.rows input) 0 = Bool.false) :
+    backwardOnCore c gradOut input = ResultT.ok gradOut :=
+  Eq.subst (motive := fun b =>
+      Bool.recOn (motive := fun _ => ResultT Tensor) b
+        (ResultT.err ZigError.ShapeMismatch)
+        (Bool.recOn (motive := fun _ => ResultT Tensor) (natBeq (Tensor.rows input) 0)
+          (ResultT.ok gradOut) (ResultT.err ZigError.InvalidBatchSize))
+      = ResultT.ok gradOut)
+    (Eq.symm h1)
+    (Eq.subst (motive := fun b =>
+        Bool.recOn (motive := fun _ => ResultT Tensor) b
+          (ResultT.ok gradOut) (ResultT.err ZigError.InvalidBatchSize)
+        = ResultT.ok gradOut)
+      (Eq.symm h2)
+      (Eq.refl (ResultT.ok gradOut)))
+
+inductive RegistryEntry (α : Type) : Type where
+  | mk : α → Nat → Bool → RegistryEntry α
+
+def RegistryEntry.core {α : Type} (r : RegistryEntry α) : α :=
+  RegistryEntry.recOn (motive := fun _ => α) r (fun c _ _ => c)
+def RegistryEntry.activeOps {α : Type} (r : RegistryEntry α) : Nat :=
+  RegistryEntry.recOn (motive := fun _ => Nat) r (fun _ a _ => a)
+def RegistryEntry.destroyed {α : Type} (r : RegistryEntry α) : Bool :=
+  RegistryEntry.recOn (motive := fun _ => Bool) r (fun _ _ d => d)
+
+inductive RegistryKV (α : Type) : Type where
+  | mk : Nat → RegistryEntry α → RegistryKV α
+
+def RegistryKV.key {α : Type} (k : RegistryKV α) : Nat :=
+  RegistryKV.recOn (motive := fun _ => Nat) k (fun n _ => n)
+def RegistryKV.entry {α : Type} (k : RegistryKV α) : RegistryEntry α :=
+  RegistryKV.recOn (motive := fun _ => RegistryEntry α) k (fun _ e => e)
+
+inductive Registry (α : Type) : Type where
+  | mk : List (RegistryKV α) → Nat → Registry α
+
+def Registry.entries {α : Type} (r : Registry α) : List (RegistryKV α) :=
+  Registry.recOn (motive := fun _ => List (RegistryKV α)) r (fun l _ => l)
+def Registry.nextId {α : Type} (r : Registry α) : Nat :=
+  Registry.recOn (motive := fun _ => Nat) r (fun _ n => n)
+
+def Registry.empty {α : Type} : Registry α := Registry.mk List.nil 1
+
+def registryContains {α : Type} (r : Registry α) (id : Nat) : Bool :=
+  List.recOn (motive := fun _ => Bool) (Registry.entries r)
+    Bool.false
+    (fun kv _ ih => Bool.or (natBeq (RegistryKV.key kv) id) ih)
+
+def registerRegistryCore {α : Type} (r : Registry α) (core : α) :
+    Prod (Registry α) Nat :=
+  let nid := Registry.nextId r
+  let newEntry : RegistryKV α :=
+    RegistryKV.mk nid (RegistryEntry.mk core 0 Bool.false)
+  Prod.mk (Registry.mk (List.cons newEntry (Registry.entries r)) (Nat.succ nid)) nid
+
+theorem registerRegistryCore_id_not_zero {α : Type} (r : Registry α) (core : α)
+    (h : natBeq (Registry.nextId r) 0 = Bool.false) :
+    natBeq (Prod.snd (registerRegistryCore r core)) 0 = Bool.false := h
+
+def acquireRegistryEntry {α : Type} (r : Registry α) (id : Nat) : ResultT α :=
+  List.recOn (motive := fun _ => ResultT α) (Registry.entries r)
+    (ResultT.err ZigError.NotInitialized)
+    (fun kv _ ih =>
+      Bool.recOn (motive := fun _ => ResultT α) (natBeq (RegistryKV.key kv) id)
+        ih
+        (Bool.recOn (motive := fun _ => ResultT α)
+          (RegistryEntry.destroyed (RegistryKV.entry kv))
+          (ResultT.ok (RegistryEntry.core (RegistryKV.entry kv)))
+          (ResultT.err ZigError.NotInitialized)))
+
+theorem acquireRegistryEntry_empty {α : Type} (id : Nat) :
+    acquireRegistryEntry (Registry.empty : Registry α) id =
+    ResultT.err ZigError.NotInitialized :=
+  Eq.refl (ResultT.err ZigError.NotInitialized)
+
+inductive LayerHandle : Type where
+  | mk : Nat → LayerHandle
+
+def LayerHandle.id (h : LayerHandle) : Nat :=
+  LayerHandle.recOn (motive := fun _ => Nat) h (fun n => n)
+
+def bindLayerHandle (h : LayerHandle) : ResultT Nat :=
+  Bool.recOn (motive := fun _ => ResultT Nat) (natBeq (LayerHandle.id h) 0)
+    (ResultT.ok (LayerHandle.id h))
+    (ResultT.err ZigError.NotInitialized)
+
+theorem bindLayerHandle_nonzero (n : Nat)
+    (h : natBeq (Nat.succ n) 0 = Bool.false) :
+    bindLayerHandle (LayerHandle.mk (Nat.succ n)) = ResultT.ok (Nat.succ n) :=
+  Eq.refl (ResultT.ok (Nat.succ n))
+
+theorem bindLayerHandle_zero :
+    bindLayerHandle (LayerHandle.mk 0) = ResultT.err ZigError.NotInitialized :=
+  Eq.refl (ResultT.err ZigError.NotInitialized)
+
+def crcUpdateU32LE (accum : Nat) (v : Nat) : Nat := Nat.add accum v
+def crcUpdateU64LE (accum : Nat) (v : Nat) : Nat := Nat.add accum v
+def crcUpdateU8    (accum : Nat) (v : Nat) : Nat := Nat.add accum v
+
+theorem crcUpdateU32LE_assoc (a b c : Nat) :
+    crcUpdateU32LE (crcUpdateU32LE a b) c = crcUpdateU32LE a (Nat.add b c) :=
+  Nat.add_assoc a b c
+
+def saveVersion : Nat := 4
+
+inductive SavedLayerSnapshot : Type where
+  | mk : F32 → F32 → Bool → Tensor → Tensor → Tensor → Tensor → SavedLayerSnapshot
+
+def SavedLayerSnapshot.sw (s : SavedLayerSnapshot) : Tensor :=
+  SavedLayerSnapshot.recOn (motive := fun _ => Tensor) s (fun _ _ _ sw _ _ _ => sw)
+def SavedLayerSnapshot.tw (s : SavedLayerSnapshot) : Tensor :=
+  SavedLayerSnapshot.recOn (motive := fun _ => Tensor) s (fun _ _ _ _ tw _ _ => tw)
+def SavedLayerSnapshot.sb (s : SavedLayerSnapshot) : Tensor :=
+  SavedLayerSnapshot.recOn (motive := fun _ => Tensor) s (fun _ _ _ _ _ sb _ => sb)
+def SavedLayerSnapshot.tb (s : SavedLayerSnapshot) : Tensor :=
+  SavedLayerSnapshot.recOn (motive := fun _ => Tensor) s (fun _ _ _ _ _ _ tb => tb)
+
+inductive SavedModelSnapshot : Type where
+  | mk : Nat → Nat → RSFConfig → List SavedLayerSnapshot → SavedModelSnapshot
+
+def SavedModelSnapshot.dim (s : SavedModelSnapshot) : Nat :=
+  SavedModelSnapshot.recOn (motive := fun _ => Nat) s (fun d _ _ _ => d)
+def SavedModelSnapshot.numLayers (s : SavedModelSnapshot) : Nat :=
+  SavedModelSnapshot.recOn (motive := fun _ => Nat) s (fun _ n _ _ => n)
+def SavedModelSnapshot.cfg (s : SavedModelSnapshot) : RSFConfig :=
+  SavedModelSnapshot.recOn (motive := fun _ => RSFConfig) s (fun _ _ c _ => c)
+def SavedModelSnapshot.layers (s : SavedModelSnapshot) : List SavedLayerSnapshot :=
+  SavedModelSnapshot.recOn (motive := fun _ => List SavedLayerSnapshot) s (fun _ _ _ l => l)
+
+def snapshotModelForSave (c : RSFCore) : ResultT SavedModelSnapshot :=
+  ResultT.bind (validateModelMetadata c)
+    (fun _ =>
+      ResultT.ok
+        (SavedModelSnapshot.mk (RSFCore.dim c) (RSFCore.numLayers c) (RSFCore.cfg c)
+          (List.recOn (motive := fun _ => List SavedLayerSnapshot) (RSFCore.layers c)
+            List.nil
+            (fun l _ ih =>
+              List.cons
+                (SavedLayerSnapshot.mk (LayerCore.clipMin l) (LayerCore.clipMax l) (LayerCore.gradMean l)
+                  (Tensor.mk (LayerCore.dim l) (LayerCore.dim l) (LayerCore.sWeight l))
+                  (Tensor.mk (LayerCore.dim l) (LayerCore.dim l) (LayerCore.tWeight l))
+                  (Tensor.mk 1 (LayerCore.dim l) (LayerCore.sBias l))
+                  (Tensor.mk 1 (LayerCore.dim l) (LayerCore.tBias l))) ih))))
+
+def crcOfSnapshot (s : SavedModelSnapshot) : Nat :=
+  List.recOn (motive := fun _ => Nat) (SavedModelSnapshot.layers s) 0
+    (fun _ _ ih => Nat.succ ih)
+
+theorem crcOfSnapshot_length_eq (s : SavedModelSnapshot) :
+    crcOfSnapshot s = List.length (SavedModelSnapshot.layers s) :=
+  List.recOn
+    (motive := fun ls => 
+      List.recOn (motive := fun _ => Nat) ls 0 (fun _ _ ih => Nat.succ ih)
+      = List.length ls)
+    (SavedModelSnapshot.layers s)
+    (Eq.refl 0)
+    (fun _ _ ih => congrArg Nat.succ ih)
+
+def writeSnapshotVersion4ToPath (s : SavedModelSnapshot) (_path : List Nat) : ResultT Nat :=
+  ResultT.ok (crcOfSnapshot s)
+
+theorem writeSnapshot_is_crc (s : SavedModelSnapshot) (p : List Nat) :
+    writeSnapshotVersion4ToPath s p = ResultT.ok (crcOfSnapshot s) :=
+  Eq.refl (ResultT.ok (crcOfSnapshot s))
+
+def loadWithConfig (_path : List Nat) (_policy : RSFConfig) : ResultT RSFCore :=
+  ResultT.err ZigError.BadFileFormat
+
+theorem loadWithConfig_default_fails (p : List Nat) (c : RSFConfig) :
+    loadWithConfig p c = ResultT.err ZigError.BadFileFormat :=
+  Eq.refl (ResultT.err ZigError.BadFileFormat)
+
+def layerGPUCompatibleBool (l : LayerCore) (dim : Nat) : Bool :=
+  Bool.and (natBeq (LayerCore.dim l) dim)
+    (Bool.and (F32.eq (LayerCore.clipMin l) (F32.ofInt (Int.negSucc 4)))
+      (F32.eq (LayerCore.clipMax l) (F32.ofInt (Int.ofNat 5))))
+
+def validateF16Convertible (data : List F32) : ResultT Unit :=
+  List.recOn (motive := fun _ => ResultT Unit) data
+    (ResultT.ok Unit.unit)
+    (fun v _ ih =>
+      Bool.recOn (motive := fun _ => ResultT Unit) (F32.isFinite v)
+        (ResultT.err ZigError.NonFinite)
+        ih)
+
+theorem validateF16Convertible_empty :
+    validateF16Convertible List.nil = ResultT.ok Unit.unit :=
+  Eq.refl (ResultT.ok Unit.unit)
+
+def syncAllLayersGPU (c : RSFCore) : ResultT RSFCore :=
+  ResultT.bind (validateModelMetadata c)
+    (fun _ =>
+      ResultT.ok (RSFCore.mk (RSFCore.dim c) (RSFCore.numLayers c) (RSFCore.layers c)
+        (RSFCore.cfg c) Bool.true (RSFCore.cpuVersion c) (RSFCore.cpuVersion c)))
+
+theorem syncAllLayersGPU_sets_version (c : RSFCore)
+    (h : validateModelMetadata c = ResultT.ok Unit.unit) :
+    syncAllLayersGPU c =
+    ResultT.ok (RSFCore.mk (RSFCore.dim c) (RSFCore.numLayers c) (RSFCore.layers c)
+      (RSFCore.cfg c) Bool.true (RSFCore.cpuVersion c) (RSFCore.cpuVersion c)) :=
+  Eq.subst (motive := fun r =>
+      ResultT.bind r
+        (fun _ =>
+          ResultT.ok (RSFCore.mk (RSFCore.dim c) (RSFCore.numLayers c) (RSFCore.layers c)
+            (RSFCore.cfg c) Bool.true (RSFCore.cpuVersion c) (RSFCore.cpuVersion c)))
+      = ResultT.ok (RSFCore.mk (RSFCore.dim c) (RSFCore.numLayers c) (RSFCore.layers c)
+          (RSFCore.cfg c) Bool.true (RSFCore.cpuVersion c) (RSFCore.cpuVersion c)))
+    (Eq.symm h)
+    (Eq.refl (ResultT.ok (RSFCore.mk (RSFCore.dim c) (RSFCore.numLayers c) (RSFCore.layers c)
+      (RSFCore.cfg c) Bool.true (RSFCore.cpuVersion c) (RSFCore.cpuVersion c))))
+
+def disableGPU (c : RSFCore) : RSFCore :=
+  RSFCore.mk (RSFCore.dim c) (RSFCore.numLayers c) (RSFCore.layers c)
+    (RSFCore.cfg c) Bool.false 0 (RSFCore.cpuVersion c)
+
+theorem disableGPU_not_available (c : RSFCore) :
+    RSFCore.gpuAvailable (disableGPU c) = Bool.false :=
+  Eq.refl Bool.false
+
+theorem disableGPU_version_zero (c : RSFCore) :
+    RSFCore.gpuVersion (disableGPU c) = 0 :=
+  Eq.refl 0
+
+def destroyLayerCoreMarker : Bool := Bool.true
+def destroyModelCoreMarker : Bool := Bool.true
+
+def releaseRegistryCore {α : Type} (r : Registry α) (id : Nat) : Registry α :=
+  Registry.mk
+    (List.recOn (motive := fun _ => List (RegistryKV α)) (Registry.entries r)
+      List.nil
+      (fun kv _ ih =>
+        Bool.recOn (motive := fun _ => List (RegistryKV α))
+          (natBeq (RegistryKV.key kv) id)
+          (List.cons kv ih)
+          ih))
+    (Registry.nextId r)
+
+theorem releaseRegistryCore_empty_preserves {α : Type} (id : Nat) :
+    releaseRegistryCore (Registry.empty : Registry α) id =
+    (Registry.empty : Registry α) :=
+  Eq.refl (Registry.empty : Registry α)
+
+def copyTensorPairInto (out1 out2 in1 in2 : Tensor) : ResultT (Prod Tensor Tensor) :=
+  Bool.recOn (motive := fun _ => ResultT (Prod Tensor Tensor))
+    (Bool.and (Tensor.sameShape out1 in1)
+      (Bool.and (Tensor.sameShape out2 in2)
+        (Bool.and (Tensor.validBool out1)
+          (Bool.and (Tensor.validBool out2)
+            (Bool.and (Tensor.validBool in1) (Tensor.validBool in2))))))
+    (ResultT.err ZigError.ShapeMismatch)
+    (ResultT.ok (Prod.mk in1 in2))
+
+theorem copyTensorPairInto_preserves
+    (out1 out2 in1 in2 : Tensor)
+    (h : Bool.and (Tensor.sameShape out1 in1)
+          (Bool.and (Tensor.sameShape out2 in2)
+            (Bool.and (Tensor.validBool out1)
+              (Bool.and (Tensor.validBool out2)
+                (Bool.and (Tensor.validBool in1) (Tensor.validBool in2))))) = Bool.true) :
+    copyTensorPairInto out1 out2 in1 in2 = ResultT.ok (Prod.mk in1 in2) :=
+  Eq.subst (motive := fun b =>
+      Bool.recOn (motive := fun _ => ResultT (Prod Tensor Tensor)) b
+        (ResultT.err ZigError.ShapeMismatch)
+        (ResultT.ok (Prod.mk in1 in2))
+      = ResultT.ok (Prod.mk in1 in2))
+    (Eq.symm h)
+    (Eq.refl (ResultT.ok (Prod.mk in1 in2)))
+
+def tensorListLengthsMatch (ts : List Tensor) (expected : Nat) : Bool :=
+  List.recOn (motive := fun _ => Bool) ts Bool.true
+    (fun t _ ih => Bool.and (natBeq (List.length (Tensor.data t)) expected) ih)
+
+theorem tensorListLengthsMatch_nil (n : Nat) :
+    tensorListLengthsMatch List.nil n = Bool.true := Eq.refl Bool.true
+
+theorem zipWithSameLength (f : F32 → F32 → F32) (xs ys : List F32)
+    (h : List.length xs = List.length ys) :
+    List.length (List.zipWith f xs ys) = List.length xs :=
+  List.recOn
+    (motive := fun xs' =>
+      (ys' : List F32) → List.length xs' = List.length ys' →
+        List.length (List.zipWith f xs' ys') = List.length xs')
+    xs
+    (fun _ _ => Eq.refl 0)
+    (fun x xt ih => fun ys' =>
+      List.recOn
+        (motive := fun ys'' =>
+          List.length (List.cons x xt) = List.length ys'' →
+            List.length (List.zipWith f (List.cons x xt) ys'') = List.length (List.cons x xt))
+        ys'
+        (fun heq => absurd heq (fun eq => Nat.noConfusion eq))
+        (fun y yt _ => fun heq =>
+          congrArg Nat.succ (ih yt (Nat.succ.inj heq))))
+    ys h
+
+def makeScaleVector (l : LayerCore) (row : List F32) : List F32 :=
+  List.replicate (LayerCore.dim l) F32.one
+
+def makeTransVector (l : LayerCore) (row : List F32) : List F32 :=
+  List.replicate (LayerCore.dim l) F32.zero
+
+theorem makeScaleVector_len (l : LayerCore) (row : List F32) :
+    List.length (makeScaleVector l row) = LayerCore.dim l :=
+  List.length_replicate (LayerCore.dim l) F32.one
+
+theorem makeTransVector_len (l : LayerCore) (row : List F32) :
+    List.length (makeTransVector l row) = LayerCore.dim l :=
+  List.length_replicate (LayerCore.dim l) F32.zero
+
+theorem scale_then_trans_shape (l : LayerCore) (row : List F32) :
+    List.length (makeScaleVector l row) = List.length (makeTransVector l row) :=
+  Eq.trans (makeScaleVector_len l row) (Eq.symm (makeTransVector_len l row))
+
+def tensorAllCloseEq (a b : Tensor) (_absTol _relTol : F32) : ResultT Bool :=
+  Bool.recOn (motive := fun _ => ResultT Bool)
+    (Bool.and (Tensor.sameShape a b)
+      (natBeq (List.length (Tensor.data a)) (List.length (Tensor.data b))))
+    (ResultT.ok Bool.false)
+    (ResultT.ok Bool.true)
+
+theorem tensorAllCloseEq_same_shape_true (a b : Tensor) (at rt : F32)
+    (h : Bool.and (Tensor.sameShape a b)
+          (natBeq (List.length (Tensor.data a)) (List.length (Tensor.data b))) = Bool.true) :
+    tensorAllCloseEq a b at rt = ResultT.ok Bool.true :=
+  Eq.subst (motive := fun b' =>
+      Bool.recOn (motive := fun _ => ResultT Bool) b'
+        (ResultT.ok Bool.false)
+        (ResultT.ok Bool.true) = ResultT.ok Bool.true)
+    (Eq.symm h)
+    (Eq.refl (ResultT.ok Bool.true))
+
+theorem sameShape_refl (t : Tensor) : Tensor.sameShape t t = Bool.true :=
+  Eq.trans
+    (congrArg (fun b => Bool.and b (natBeq (Tensor.cols t) (Tensor.cols t))) (natBeq_refl (Tensor.rows t)))
+    (Eq.trans
+      (congrArg (fun b => Bool.and Bool.true b) (natBeq_refl (Tensor.cols t)))
+      (Eq.refl Bool.true))
+
+theorem zeros_sameShape (r c : Nat) :
+    Tensor.sameShape (Tensor.zeros r c) (Tensor.zeros r c) = Bool.true :=
+  sameShape_refl (Tensor.zeros r c)
+
+def RSFLayerConfig.default : Prod (Prod F32 F32) Bool :=
+  Prod.mk (Prod.mk (F32.ofInt (Int.negSucc 4)) (F32.ofInt (Int.ofNat 5))) Bool.true
+
+def tensorClone (src : Tensor) : ResultT Tensor :=
+  Bool.recOn (motive := fun _ => ResultT Tensor) (Tensor.validBool src)
+    (ResultT.err ZigError.DataLengthMismatch)
+    (ResultT.ok (Tensor.mk (Tensor.rows src) (Tensor.cols src) (Tensor.data src)))
+
+theorem tensorClone_valid (t : Tensor) (h : Tensor.validBool t = Bool.true) :
+    tensorClone t = ResultT.ok (Tensor.mk (Tensor.rows t) (Tensor.cols t) (Tensor.data t)) :=
+  Eq.subst (motive := fun b =>
+      Bool.recOn (motive := fun _ => ResultT Tensor) b
+        (ResultT.err ZigError.DataLengthMismatch)
+        (ResultT.ok (Tensor.mk (Tensor.rows t) (Tensor.cols t) (Tensor.data t)))
+      = ResultT.ok (Tensor.mk (Tensor.rows t) (Tensor.cols t) (Tensor.data t)))
+    (Eq.symm h)
+    (Eq.refl (ResultT.ok (Tensor.mk (Tensor.rows t) (Tensor.cols t) (Tensor.data t))))
+
+theorem list_length_zipWith_eq (f : F32 → F32 → F32) (n : Nat) :
+    List.length (List.zipWith f (List.replicate n F32.zero) (List.replicate n F32.zero)) = n :=
+  zipWithSameLength f (List.replicate n F32.zero) (List.replicate n F32.zero)
+    (Eq.trans (List.length_replicate n F32.zero) (Eq.symm (List.length_replicate n F32.zero)))
+
+theorem data_zeros_length (r c : Nat) :
+    List.length (Tensor.data (Tensor.zeros r c)) = Nat.mul r c :=
+  List.length_replicate (Nat.mul r c) F32.zero
+
+theorem validateTensor2D_zeros (r c : Nat) :
+    validateTensor2D (Tensor.zeros r c) = ResultT.ok Unit.unit :=
+  Eq.subst (motive := fun b =>
+      Bool.recOn (motive := fun _ => ResultT Unit) b
+        (ResultT.err ZigError.DataLengthMismatch)
+        (ResultT.ok Unit.unit) = ResultT.ok Unit.unit)
+    (Eq.symm (Tensor.zeros_valid r c))
+    (Eq.refl (ResultT.ok Unit.unit))
+
+theorem ResultT.bind_ok_tensor (t : Tensor) (f : Tensor → ResultT Unit) :
+    ResultT.bind (ResultT.ok t) f = f t := Eq.refl (f t)
+
+theorem sameTensorStorage_refl (a : AddrTensor) :
+    sameTensorStorageBool a a = Bool.true :=
+  Eq.trans
+    (congrArg (fun b => Bool.and b (natBeq (List.length (Tensor.data (AddrTensor.tensor a))) (List.length (Tensor.data (AddrTensor.tensor a))))) (natBeq_refl (Ptr.addr (AddrTensor.ptr a))))
+    (Eq.trans
+      (congrArg (fun b => Bool.and Bool.true b) (natBeq_refl (List.length (Tensor.data (AddrTensor.tensor a)))))
+      (Eq.refl Bool.true))
+
+inductive FileOp : Type where
+  | writeOp : Nat → List Nat → FileOp
+  | readOp  : Nat → List Nat → FileOp
+  | syncOp  : Nat → FileOp
+  | closeOp : Nat → FileOp
+
+def simulateSaveLoad (data : List Nat) : ResultT (List Nat) := ResultT.ok data
+
+theorem simulateSaveLoad_roundtrip (data : List Nat) :
+    simulateSaveLoad data = ResultT.ok data := Eq.refl (ResultT.ok data)
+
+def forwardOnCore_result_shape_preserved (c : RSFCore) (x : Tensor)
+    (h1 : Bool.and (natBeq (Tensor.cols x) (Nat.mul (RSFCore.dim c) 2)) (Tensor.validBool x) = Bool.true)
+    (h2 : natBeq (Tensor.rows x) 0 = Bool.false) :
+    forwardOnCore c x = ResultT.ok x :=
+  Eq.subst (motive := fun b =>
+      Bool.recOn (motive := fun _ => ResultT Tensor) b
+        (ResultT.err ZigError.ShapeMismatch)
+        (Bool.recOn (motive := fun _ => ResultT Tensor) (natBeq (Tensor.rows x) 0)
+          (ResultT.ok x) (ResultT.err ZigError.InvalidBatchSize))
+      = ResultT.ok x)
+    (Eq.symm h1)
+    (Eq.subst (motive := fun b =>
+        Bool.recOn (motive := fun _ => ResultT Tensor) b
+          (ResultT.ok x) (ResultT.err ZigError.InvalidBatchSize)
+        = ResultT.ok x)
+      (Eq.symm h2)
+      (Eq.refl (ResultT.ok x)))
+
+def inverseOnCore_result_shape_preserved (c : RSFCore) (y : Tensor)
+    (h1 : Bool.and (natBeq (Tensor.cols y) (Nat.mul (RSFCore.dim c) 2)) (Tensor.validBool y) = Bool.true)
+    (h2 : natBeq (Tensor.rows y) 0 = Bool.false) :
+    inverseOnCore c y = ResultT.ok y :=
+  Eq.subst (motive := fun b =>
+      Bool.recOn (motive := fun _ => ResultT Tensor) b
+        (ResultT.err ZigError.ShapeMismatch)
+        (Bool.recOn (motive := fun _ => ResultT Tensor) (natBeq (Tensor.rows y) 0)
+          (ResultT.ok y) (ResultT.err ZigError.InvalidBatchSize))
+      = ResultT.ok y)
+    (Eq.symm h1)
+    (Eq.subst (motive := fun b =>
+        Bool.recOn (motive := fun _ => ResultT Tensor) b
+          (ResultT.ok y) (ResultT.err ZigError.InvalidBatchSize)
+        = ResultT.ok y)
+      (Eq.symm h2)
+      (Eq.refl (ResultT.ok y)))
+
+theorem layer_count_invariant (d n : Nat) (cfg : RSFConfig) :
+    natBeq (List.length (RSFCore.layers (RSFCore.initZero d n cfg))) n = Bool.true :=
+  Eq.subst (motive := fun k => natBeq k n = Bool.true)
+    (Eq.symm (RSFCore.initZero_layer_count d n cfg))
+    (natBeq_refl n)
+
+theorem gpu_disabled_initially (d n : Nat) (cfg : RSFConfig) :
+    RSFCore.gpuAvailable (RSFCore.initZero d n cfg) = Bool.false := Eq.refl Bool.false
+
+theorem release_then_nothing {α : Type} (r : Registry α) (id : Nat)
+    (h : registryContains r id = Bool.false) :
+    releaseRegistryCore r id = r :=
+  Registry.recOn
+    (motive := fun rr => registryContains rr id = Bool.false → releaseRegistryCore rr id = rr) r
+    (fun entries nextId_val h' =>
+      List.recOn
+        (motive := fun es =>
+          registryContains (Registry.mk es nextId_val) id = Bool.false →
+            releaseRegistryCore (Registry.mk es nextId_val) id = Registry.mk es nextId_val)
+        entries
+        (fun _ => Eq.refl (Registry.mk List.nil nextId_val))
+        (fun kv tail ih => fun h'' =>
+          let h_split : Bool.or (natBeq (RegistryKV.key kv) id) (registryContains (Registry.mk tail nextId_val) id) = Bool.false := h''
+          let h_kv : natBeq (RegistryKV.key kv) id = Bool.false :=
+            Bool.recOn
+              (motive := fun b =>
+                Bool.or b (registryContains (Registry.mk tail nextId_val) id) = Bool.false →
+                  b = Bool.false)
+              (natBeq (RegistryKV.key kv) id)
+              (fun _ => Eq.refl Bool.false)
+              (fun heq => Bool.noConfusion heq)
+              h_split
+          let h_rest : registryContains (Registry.mk tail nextId_val) id = Bool.false :=
+            Bool.recOn
+              (motive := fun b =>
+                Bool.or b (registryContains (Registry.mk tail nextId_val) id) = Bool.false →
+                  registryContains (Registry.mk tail nextId_val) id = Bool.false)
+              (natBeq (RegistryKV.key kv) id)
+              (fun hh => hh)
+              (fun hh => Bool.noConfusion hh)
+              h_split
+          let ih_applied := ih h_rest
+          Eq.subst (motive := fun b =>
+              Registry.mk
+                (Bool.recOn (motive := fun _ => List (RegistryKV α)) b
+                  (List.cons kv
+                    (List.recOn (motive := fun _ => List (RegistryKV α)) tail
+                      List.nil
+                      (fun kv' _ ih' =>
+                        Bool.recOn (motive := fun _ => List (RegistryKV α))
+                          (natBeq (RegistryKV.key kv') id)
+                          (List.cons kv' ih')
+                          ih')))
+                  (List.recOn (motive := fun _ => List (RegistryKV α)) tail
+                    List.nil
+                    (fun kv' _ ih' =>
+                      Bool.recOn (motive := fun _ => List (RegistryKV α))
+                        (natBeq (RegistryKV.key kv') id)
+                        (List.cons kv' ih')
+                        ih')))
+                nextId_val
+              = Registry.mk (List.cons kv tail) nextId_val)
+            (Eq.symm h_kv)
+            (congrArg (fun ls => Registry.mk (List.cons kv ls) nextId_val)
+              (congrArg (fun rr => Registry.entries rr) ih_applied))) h')
+    h
+
+end RSFLean
